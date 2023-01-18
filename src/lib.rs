@@ -45,7 +45,8 @@ impl<T> TimeVec<T> {
         self.buffer.push_back((timestamp, item));
 
         let partition_timestamp = timestamp.saturating_sub(self.limit);
-        self.buffer.retain(|i| i.0 < partition_timestamp);
+        let partition_point = self.buffer.partition_point(|i| i.0 < partition_timestamp);
+        self.buffer.drain(0..partition_point);
     }
 
     #[inline]
