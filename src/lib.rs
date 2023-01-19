@@ -1,6 +1,7 @@
 use std::collections::vec_deque::Drain;
 use std::collections::VecDeque;
 use core::time::Duration;
+use std::marker::PhantomData;
 
 type Item<T> = (Duration, T);
 
@@ -16,6 +17,10 @@ impl<T> TimeVec<T> {
     pub fn new(limit: Duration, capacity: usize) -> Self {
         let buffer = VecDeque::with_capacity(capacity);
         Self { limit, buffer }
+    }
+
+    pub fn builder() -> TimeVecBuilder<T> {
+        TimeVecBuilder::<T>::default()
     }
 
     #[inline]
@@ -39,14 +44,17 @@ impl<T> TimeVec<T> {
     }
 
     #[inline]
-    pub fn push(&mut self, timestamp: Duration, item: T) {
-        assert!(self.check_timestamp(timestamp));
+    pub fn push(&mut self, timestamp: Duration, item: T) -> Option<Drain<Item<T>>> {
+        if self.check_timestamp(timestamp) {
+            self.buffer.push_back((timestamp, item));
 
-        self.buffer.push_back((timestamp, item));
+            let partition_timestamp = timestamp.saturating_sub(self.limit);
+            let partition_point = self.buffer.partition_point(|i| i.0 < partition_timestamp);
 
-        let partition_timestamp = timestamp.saturating_sub(self.limit);
-        let partition_point = self.buffer.partition_point(|i| i.0 < partition_timestamp);
-        self.buffer.drain(0..partition_point);
+            Some(self.buffer.drain(0..partition_point))
+        } else {
+            None
+        }
     }
 
     #[inline]
@@ -97,5 +105,125 @@ impl<T> TimeVec<T> {
     #[inline]
     pub fn drain(&mut self) -> Drain<Item<T>> {
         self.buffer.drain(..)
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct TimeVecBuilder<T> {
+    pub limit: Option<Duration>,
+    pub capacity: Option<usize>,
+    _item: PhantomData<T>,
+}
+
+impl<T> Default for TimeVecBuilder<T> {
+    fn default() -> Self {
+        Self { limit: None, capacity: None, _item: PhantomData }
+    }
+}
+
+impl<T> TimeVecBuilder<T> {
+    pub fn with_limit(mut self, value: Duration) -> Self {
+        self.limit = Some(value);
+        self
+    }
+
+    pub fn with_limit_secs(self, value: u64) -> Self {
+        self.with_limit(Duration::from_secs(value))
+    }
+
+    pub fn with_limit_micros(self, value: u64) -> Self {
+        self.with_limit(Duration::from_micros(value))
+    }
+
+    pub fn with_limit_millis(self, value: u64) -> Self {
+        self.with_limit(Duration::from_millis(value))
+    }
+
+    pub fn with_limit_nanos(self, value: u64) -> Self {
+        self.with_limit(Duration::from_nanos(value))
+    }
+
+    pub fn with_capacity(mut self, value: usize) -> Self {
+        self.capacity = Some(value);
+        self
+    }
+
+    pub fn build(self) -> TimeVec<T> {
+        TimeVec {
+            limit: self.limit.unwrap_or_default(),
+            buffer: self.capacity
+                .map(|value| VecDeque::<Item<T>>::with_capacity(value))
+                .unwrap_or_default()
+                
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn with_zero_limit() {
+        let mut tv = TimeVec::<()>::builder()
+            .with_limit(Duration::ZERO)
+            .build();
+        assert!(tv.is_empty());
+
+        assert_eq!(tv.checked_duration(), None);
+        assert_eq!(tv.duration(), Duration::ZERO);
+        assert_eq!(tv.len(), 0);
+
+        tv.push(Duration::from_secs(1), ());
+        assert_eq!(tv.checked_duration(), Some(Duration::ZERO));
+        assert_eq!(tv.duration(), Duration::ZERO);
+        assert_eq!(tv.len(), 1);
+    }
+
+    #[test]
+    fn push_two_items_with_same_timestamp() {
+        let mut tv = TimeVec::<()>::builder()
+            .with_limit_nanos(1)
+            .build();
+        
+        tv.push(Duration::from_secs(1), ());
+        assert_eq!(tv.len(), 1);
+
+        tv.push(Duration::from_secs(1), ());
+        assert_eq!(tv.len(), 1);
+    }
+
+    #[test]
+    fn min_limit() {
+        let mut tv = TimeVec::<()>::builder()
+            .with_limit_nanos(1)
+            .build();
+        
+        tv.push(Duration::ZERO, ());
+        assert_eq!(tv.len(), 1);
+
+        tv.push(Duration::from_nanos(1), ());
+        assert_eq!(tv.len(), 2);
+
+        tv.push(Duration::from_nanos(2), ());
+        assert_eq!(tv.checked_duration(), Some(Duration::from_nanos(1)));
+        assert_eq!(tv.len(), 2);
+    }
+
+    #[test]
+    fn push_above_the_non_min_limit() {
+        let mut tv = TimeVec::<()>::builder()
+            .with_limit_nanos(3)
+            .build();
+        
+        tv.push(Duration::ZERO, ());
+        tv.push(Duration::from_nanos(1), ());
+        tv.push(Duration::from_nanos(2), ());
+        tv.push(Duration::from_nanos(3), ());
+        assert_eq!(tv.len(), 4);
+
+        tv.push(Duration::from_nanos(4), ());
+        assert_eq!(tv.len(), 4);
     }
 }
