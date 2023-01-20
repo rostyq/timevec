@@ -2,6 +2,7 @@ use std::collections::vec_deque::Drain;
 use std::collections::VecDeque;
 use core::time::Duration;
 use std::marker::PhantomData;
+use std::ops::RangeBounds;
 
 type Item<T> = (Duration, T);
 
@@ -36,7 +37,7 @@ impl<T> TimeVec<T> {
     }
 
     #[inline]
-    fn check_timestamp(&self, value: Duration) -> bool {
+    fn timestamp_is_ok(&self, value: Duration) -> bool {
         self.buffer
             .back()
             .map(|i| value > i.0)
@@ -44,17 +45,26 @@ impl<T> TimeVec<T> {
     }
 
     #[inline]
-    pub fn push(&mut self, timestamp: Duration, item: T) -> Option<Drain<Item<T>>> {
-        if self.check_timestamp(timestamp) {
-            self.buffer.push_back((timestamp, item));
+    pub fn push_back_checked(&mut self, timestamp: Duration, item: T) -> Option<Drain<Item<T>>> {
+        self.timestamp_is_ok(timestamp).then(|| {
+            self.push_back_unchecked(timestamp, item)
+        })
+    }
 
-            let partition_timestamp = timestamp.saturating_sub(self.limit);
-            let partition_point = self.buffer.partition_point(|i| i.0 < partition_timestamp);
+    #[inline]
+    pub fn push_back(&mut self, timestamp: Duration, item: T) -> Drain<Item<T>> {
+        assert!(self.timestamp_is_ok(timestamp), "Timestamp is older then previous.");
+        self.push_back_unchecked(timestamp, item)
+    }
 
-            Some(self.buffer.drain(0..partition_point))
-        } else {
-            None
-        }
+    #[inline]
+    pub fn push_back_unchecked(&mut self, timestamp: Duration, item: T) -> Drain<Item<T>> {
+        self.buffer.push_back((timestamp, item));
+
+        let partition_timestamp = timestamp.saturating_sub(self.limit);
+        let partition_point = self.buffer.partition_point(|i| i.0 < partition_timestamp);
+
+        self.buffer.drain(0..partition_point)
     }
 
     #[inline]
@@ -103,8 +113,8 @@ impl<T> TimeVec<T> {
     }
 
     #[inline]
-    pub fn drain(&mut self) -> Drain<Item<T>> {
-        self.buffer.drain(..)
+    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Drain<Item<T>> {
+        self.buffer.drain(range)
     }
 }
 
@@ -175,7 +185,7 @@ mod tests {
         assert_eq!(tv.duration(), Duration::ZERO);
         assert_eq!(tv.len(), 0);
 
-        tv.push(Duration::from_secs(1), ());
+        tv.push_back(Duration::from_secs(1), ());
         assert_eq!(tv.checked_duration(), Some(Duration::ZERO));
         assert_eq!(tv.duration(), Duration::ZERO);
         assert_eq!(tv.len(), 1);
@@ -187,10 +197,10 @@ mod tests {
             .with_limit_nanos(1)
             .build();
         
-        tv.push(Duration::from_secs(1), ());
+        tv.push_back_checked(Duration::from_secs(1), ());
         assert_eq!(tv.len(), 1);
 
-        tv.push(Duration::from_secs(1), ());
+        tv.push_back_checked(Duration::from_secs(1), ());
         assert_eq!(tv.len(), 1);
     }
 
@@ -200,13 +210,13 @@ mod tests {
             .with_limit_nanos(1)
             .build();
         
-        tv.push(Duration::ZERO, ());
+        tv.push_back(Duration::ZERO, ());
         assert_eq!(tv.len(), 1);
 
-        tv.push(Duration::from_nanos(1), ());
+        tv.push_back(Duration::from_nanos(1), ());
         assert_eq!(tv.len(), 2);
 
-        tv.push(Duration::from_nanos(2), ());
+        tv.push_back(Duration::from_nanos(2), ());
         assert_eq!(tv.checked_duration(), Some(Duration::from_nanos(1)));
         assert_eq!(tv.len(), 2);
     }
@@ -217,13 +227,13 @@ mod tests {
             .with_limit_nanos(3)
             .build();
         
-        tv.push(Duration::ZERO, ());
-        tv.push(Duration::from_nanos(1), ());
-        tv.push(Duration::from_nanos(2), ());
-        tv.push(Duration::from_nanos(3), ());
+        tv.push_back(Duration::ZERO, ());
+        tv.push_back(Duration::from_nanos(1), ());
+        tv.push_back(Duration::from_nanos(2), ());
+        tv.push_back(Duration::from_nanos(3), ());
         assert_eq!(tv.len(), 4);
 
-        tv.push(Duration::from_nanos(4), ());
+        tv.push_back(Duration::from_nanos(4), ());
         assert_eq!(tv.len(), 4);
     }
 }
